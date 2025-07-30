@@ -1,0 +1,154 @@
+【完全ガイド】自作デバイスをUnreal Engineに接続する (ASerial for Windows編)
+このガイドは、C++の基礎知識があるUnreal Engine開発者が、ASerial for Windowsライブラリを使い、自作したマイコンデバイスとリアルタイムで通信するための全手順を解説します。最終的には、デバイスの向きや加速度、ボタンの状態をブループリントで簡単に扱えるようになります。
+Part 1：プロジェクトの準備とライブラリの導入
+まず、Unreal EngineのプロジェクトにASerialライブラリを組み込み、C++コードから呼び出せるように設定します。
+ステップ1-1：フォルダ構成の準備
+Unreal Engineのビルドシステムがライブラリを見つけられるように、決められた場所にソースコードを配置します。
+ 
+UEプロジェクトのルートフォルダ（.uprojectファイルがある場所）を開きます。
+Sourceフォルダがなければ、先にUEエディタからダミーのC++クラスを一度作成して、Sourceフォルダを自動生成させてください。
+Sourceフォルダ内にThirdPartyという名前の新しいフォルダを作成します。
+そのThirdPartyフォルダの中に、ASerial_Winというフォルダを作成し、提供されたASerial for Windowsの全ソースコード（ASerialCoreフォルダやWindowsSerialフォルダなど）をコピーします。
+✅ 最終的なフォルダ構成例：
+MyProject/
+└── Source/
+    ├── MyProject/          (ゲームのメインC++コード)
+    └── ThirdParty/
+        └── ASerial_Win/
+            ├── ASerialCore/
+│   ├── ASerial_ErrorCodeList.h
+            │   └── ASerial_packet.h
+            │   └── ... (その他のソースファイル)
+            └── WindowsSerial/
+                ├── WindowsSerial.h
+                └── ... (その他のソースファイル)
+
+ステップ1-2：ビルド設定の変更
+次に、Unreal Engineのビルドシステム（UnrealBuildTool）に、追加したライブラリの場所と依存関係を教えます。
+ 
+Source/MyProjectフォルダの中にあるMyProject.Build.csファイルを開きます。（MyProjectの部分はあなたのプロジェクト名です）
+以下の例のように、PublicDependencyModuleNamesに"Projects"を追加し、PrivateIncludePathsを使ってASerial_Winフォルダへのパスを追記します。
+
+MyProject.Build.cs の編集例：
+using UnrealBuildTool;
+using System.IO; // C#のPathクラスを扱うために必要
+
+public class MyProject : ModuleRules
+{
+    public MyProject(ReadOnlyTargetRules Target) : base(Target)
+    {
+        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+
+        // "Projects"を追加すると、IPluginManagerが利用可能になり、エディタでのホットリロードなどが安定します。
+        PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "Projects" });
+
+        PrivateDependencyModuleNames.AddRange(new string[] {  });
+
+        // ASerial for Windows ライブラリへのインクルードパスを追加
+        var thirdPartyPath = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../ThirdParty/"));
+        PrivateIncludePaths.Add(Path.Combine(thirdPartyPath, "ASerial_Win"));
+    }
+}
+これで、プロジェクト内のC++コードから #include "WindowsSerial/WindowsSerial.h" のようにライブラリのヘッダファイルを直接呼び出す準備が整いました。
+Part 2：通信を管理するアクターの実装
+次に、シリアル通信の全ての処理を一つにまとめた、管理用の専門アクターをC++で作成します。これにより、ブループリントから通信処理をシンプルに扱えるようになります。
+ステップ2-1：C++アクターの作成
+ 
+Unreal Engineエディタを開きます。
+メニューから「ツール」>「新規C++クラス...」を選択します。
+親クラスに Actor を選び、「次へ」をクリックします。
+名前に DeviceConnectorActor と入力し、クラスを作成します。
+Visual Studioが自動で開き、DeviceConnectorActor.hとDeviceConnectorActor.cppが生成されます。
+
+ステップ2-2：ヘッダファイル（.h）の編集
+DeviceConnectorActor.hに、ライブラリのインスタンスや、ブループリントからアクセスするための変数・関数を定義します。
+DeviceConnectorActor.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+// ASerial for Windows ライブラリの主要ヘッダをインクルード
+#include "ASerialCore/ASerial_packet.h"
+#include "WindowsSerial/WindowsSerial.h"
+#include "ASerial_lib_Controller_Win.h"
+#include "DeviceConnectorActor.generated.h"
+
+UCLASS()
+class MYPROJECT_API ADeviceConnectorActor : public AActor
+{
+    GENERATED_BODY()
+
+public:
+    ADeviceConnectorActor();
+
+protected:
+    virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+public:
+    virtual void Tick(float DeltaTime) override;
+
+private:
+    TUniquePtr<WindowsSerial> SerialInterface;
+    TUniquePtr<ASerial_lib_Controller_Win> ASerialController;
+    void ReadAndProcessData();
+    bool bIsTaskRunning;
+
+public:
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ASerial|Status", meta = (DisplayName = "Connection Status"))
+    FString ConnectionStatus;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ASerial|Data", meta = (DisplayName = "Device Rotation (Quat)"))
+    FQuat DeviceRotation;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ASerial|Data", meta = (DisplayName = "Device Acceleration (Vector)"))
+    FVector DeviceAcceleration;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ASerial|Data", meta = (DisplayName = "Is Action Button Pressed?"))
+    bool bIsActionButtonPressed;
+
+    UFUNCTION(BlueprintCallable, Category = "ASerial|Connection")
+    void ConnectToDevice();
+
+    UFUNCTION(BlueprintCallable, Category = "ASerial|Connection")
+    void DisconnectFromDevice();
+};
+Part 3：Unreal Engineエディタでのセットアップ
+C++コードの準備ができたので、次はUEエディタ上でアクターを配置し、使える状態にします。
+ 
+コードのコンパイル
+UEエディタの右下にある「コンパイル」ボタンを押して、今書いたC++コードをビルドします。成功すれば、DeviceConnectorActorがコンテンツブラウザに表示されます。
+アクターの配置
+「アクタを配置」パネル（もしなければ「ウィンドウ」メニューから開く）の検索バーに DeviceConnectorActor と入力します。
+見つかったDeviceConnectorActorを、ゲームのレベル（ワールド）にドラッグ＆ドロップします。
+これで、ゲームワールドにデバイスとの通信を管理する司令塔が配置されました。
+
+Part 4：ブループリントでのデータ活用法
+最後に、配置したDeviceConnectorActorからリアルタイムにデータを読み出し、ゲーム内のオブジェクトを動かしてみましょう。
+ステップ4-1：DeviceConnectorActorへの参照を取得
+他のブループリント（レベルブループリントやプレイヤーキャラクターなど）からデータを読み出すには、まずレベルに配置したDeviceConnectorActorへの参照（ポインタ）を取得する必要があります。
+一番簡単な方法はGet Actor Of Classノードを使うことです。
+ステップ4-2：具体的なデータ活用例
+参照を取得できれば、あとはそこからC++で公開した変数を読み出すだけです。
+
+例①：デバイスの向きに合わせてオブジェクトを回転させる
+ 
+回転させたいオブジェクト（例：剣のアクター）のブループリントを開きます。
+Event Tickから、DeviceConnectorActorの参照を使い、Device Rotation変数を取得します。
+取得した回転（FQuat）を、Set Actor Rotationノードに接続します。
+ これで、あなたが現実でデバイスを傾けると、ゲーム内のオブジェクトがリアルタイムで同じように回転します。
+
+例②：ボタンが押されたらメッセージを表示する
+ 
+Event Tickから、b Is Action Button Pressed変数を取得します。
+Branch（If文）ノードに接続し、Trueの時だけPrint Stringで「ボタンが押された！」と表示させます。
+ これを応用すれば、ボタンを押している間だけ攻撃判定を出す、といった実装が可能です。
+
+例③：加速度に応じてエフェクトを発生させる
+ 
+Device Acceleration変数を取得します。
+Vector Lengthノードで加速度ベクトルの「大きさ」を計算します。
+その大きさが一定値を超えたら（＝強く振られたら）、Spawn Emitter at Locationでエフェクトを再生します。
+このガイドを元に、あなたのオリジナルデバイスをUnreal Engineの世界で活躍させてみてください！
+画像
+Pdfとexcel作るの時間掛かりそうだから、色々ai使ってまとめた
